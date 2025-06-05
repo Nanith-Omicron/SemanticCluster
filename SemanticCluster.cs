@@ -1,137 +1,183 @@
-
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
-public class SemanticCluster<T>
+namespace Semantic
 {
-    public List<T> Members = new List<T>();
-    public T Centroid;
-
-    public float Distance(T a, T b, Func<T, T, float> metric) => metric(a, b);
-
-    public void RecalculateCentroid(Func<T, T, float> metric)
+    public interface IDistanceMetric<T>
     {
-        if (Members.Count == 0) return;
-
-        float minTotalDistance = float.MaxValue;
-        T newCentroid = Members[0];
-
-        foreach (var candidate in Members)
-        {
-            float totalDistance = 0f;
-            foreach (var other in Members)
-            {
-                totalDistance += metric(candidate, other);
-            }
-
-            if (totalDistance < minTotalDistance)
-            {
-                minTotalDistance = totalDistance;
-                newCentroid = candidate;
-            }
-        }
-
-        Centroid = newCentroid;
+        float GetDistance(T a, T b);
     }
 
-    public float GetEntropy(Func<T, T, float> metric)
+    public interface IScalarFilter<T>
     {
-        float entropy = 0f;
-        foreach (var member in Members)
-        {
-            entropy += metric(Centroid, member);
-        }
-
-        return entropy / Members.Count;
-    }
-}
-
-public class SemanticClusterManager<T>
-{
-    private List<SemanticCluster<T>> clusters = new List<SemanticCluster<T>>();
-    private Func<T, T, float> distanceMetric;
-    private int optimalClusterSize;
-    private float entropyThreshold;
-
-    public SemanticClusterManager(Func<T, T, float> distanceMetric, int datasetSize, float entropyThreshold = 0.5f)
-    {
-        this.distanceMetric = distanceMetric;
-        this.optimalClusterSize = Math.Max(1, (int)Math.Sqrt(datasetSize));
-        this.entropyThreshold = entropyThreshold;
+        bool Passes(T item);
+        void Update(T item);
     }
 
-    public void Insert(T item)
+    public class DefaultScalarFilter<T> : IScalarFilter<T>
     {
-        if (clusters.Count == 0)
+        private readonly Func<T, float> scalarProjection;
+        private float mean = 0f;
+        private float m2 = 0f;
+        private int count = 0;
+        private float stdDev = 1f;
+        private readonly float threshold;
+
+        public DefaultScalarFilter(Func<T, float> projection, float threshold = 1.5f)
         {
-            var cluster = new SemanticCluster<T> { Centroid = item };
-            cluster.Members.Add(item);
-            clusters.Add(cluster);
-            return;
+            scalarProjection = projection;
+            this.threshold = threshold;
         }
 
-        SemanticCluster<T> bestCluster = null;
-        float bestClusterDist = float.MaxValue;
-
-        foreach (var cluster in clusters)
+        public void Update(T item)
         {
-            float d = cluster.Distance(item, cluster.Centroid, distanceMetric);
-            if (d < bestClusterDist)
-            {
-                bestClusterDist = d;
-                bestCluster = cluster;
-            }
+            float value = scalarProjection(item);
+            count++;
+            float delta = value - mean;
+            mean += delta / count;
+            m2 += delta * (value - mean);
+            stdDev = count > 1 ? (float)Math.Sqrt(m2 / (count - 1)) : 1f;
         }
 
-        if (bestCluster.Members.Count >= optimalClusterSize)
+        public bool Passes(T item)
         {
-            var newCluster = new SemanticCluster<T> { Centroid = item };
-            newCluster.Members.Add(item);
-            clusters.Add(newCluster);
-        }
-        else
-        {
-            bestCluster.Members.Add(item);
-
-            float entropy = bestCluster.GetEntropy(distanceMetric);
-            if (entropy > entropyThreshold)
-            {
-                bestCluster.RecalculateCentroid(distanceMetric);
-            }
+            float value = scalarProjection(item);
+            return Math.Abs(value - mean) <= threshold * stdDev;
         }
     }
 
-    public T QueryNearest(T target)
+    public class SemanticCluster<T>
     {
-        if (clusters.Count == 0)
-            throw new InvalidOperationException("No clusters available.");
+        public readonly List<T> Items = new();
+        public T Centroid;
 
-        SemanticCluster<T> bestCluster = null;
-        float bestClusterDist = float.MaxValue;
+        private readonly IDistanceMetric<T> distanceMetric;
 
-        foreach (var cluster in clusters)
+        public SemanticCluster(IDistanceMetric<T> metric)
         {
-            float d = cluster.Distance(target, cluster.Centroid, distanceMetric);
-            if (d < bestClusterDist)
-            {
-                bestClusterDist = d;
-                bestCluster = cluster;
-            }
+            distanceMetric = metric;
         }
 
-        T bestMatch = default;
-        float bestMemberDist = float.MaxValue;
-
-        foreach (var member in bestCluster.Members)
+        public void Add(T item)
         {
-            float d = distanceMetric(target, member);
-            if (d < bestMemberDist)
-            {
-                bestMemberDist = d;
-                bestMatch = member;
-            }
+            Items.Add(item);
+            Centroid = RecalculateCentroid();
         }
 
-        return bestMatch;
+        private T RecalculateCentroid()
+        {
+            if (Items.Count == 0) return default;
+            return FindClosest(Items[^1]);
+        }
+
+        public T FindClosest(T query)
+        {
+            if (Items.Count == 0) return default;
+            if (Items.Count == 1) return Items[0];
+
+            int probeIndex = Items.Count - 1;
+            T closest = Items[probeIndex];
+            float minDist = distanceMetric.GetDistance(query, closest);
+            int worseningCount = 0;
+
+            for (int i = probeIndex - 1; i >= 0; i--)
+            {
+                float dist = distanceMetric.GetDistance(query, Items[i]);
+                if (dist < minDist)
+                {
+                    minDist = dist;
+                    closest = Items[i];
+                    worseningCount = 0;
+                }
+                else if (++worseningCount >= 5)
+                {
+                    break;
+                }
+            }
+
+            return closest;
+        }
+
+        public bool Contains(T item, float threshold)
+        {
+            foreach (var entry in Items)
+            {
+                if (distanceMetric.GetDistance(item, entry) <= threshold)
+                    return true;
+            }
+            return false;
+        }
+    }
+
+    public class HierarchicalSemanticCluster<T>
+    {
+        private readonly List<SemanticCluster<T>> topLevelClusters = new();
+        private readonly IDistanceMetric<T> distanceMetric;
+        private readonly IScalarFilter<T> prefilter;
+
+        public IReadOnlyList<SemanticCluster<T>> Clusters => topLevelClusters;
+
+        public HierarchicalSemanticCluster(IDistanceMetric<T> metric, IScalarFilter<T> filter)
+        {
+            distanceMetric = metric;
+            prefilter = filter;
+        }
+
+        public void Add(T item)
+        {
+            foreach (var cluster in topLevelClusters)
+            {
+                if (cluster.Items.Count > 0 && prefilter.Passes(item))
+                {
+                    cluster.Add(item);
+                    prefilter.Update(item);
+                    return;
+                }
+            }
+
+            var newCluster = new SemanticCluster<T>(distanceMetric);
+            newCluster.Add(item);
+            topLevelClusters.Add(newCluster);
+            prefilter.Update(item);
+        }
+
+        public T FindClosest(T query)
+        {
+            var candidateClusters = topLevelClusters
+                .Where(c => c.Items.Count > 0)
+                .OrderBy(c => distanceMetric.GetDistance(query, c.Centroid))
+                .Take(3);
+
+            T best = default;
+            float minDist = float.MaxValue;
+
+            foreach (var cluster in candidateClusters)
+            {
+                T candidate = cluster.FindClosest(query);
+                float dist = distanceMetric.GetDistance(query, candidate);
+                if (dist < minDist)
+                {
+                    minDist = dist;
+                    best = candidate;
+                }
+            }
+            return best;
+        }
+
+        public bool ContainsApproximately(T query, float threshold)
+        {
+            foreach (var cluster in topLevelClusters)
+            {
+                if (cluster.Items.Count == 0 || !prefilter.Passes(query))
+                    continue;
+
+                T candidate = cluster.FindClosest(query);
+                float dist = distanceMetric.GetDistance(query, candidate);
+                if (dist <= threshold)
+                    return true;
+            }
+            return false;
+        }
     }
 }
