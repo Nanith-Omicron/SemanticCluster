@@ -9,6 +9,10 @@ After extensive testing, **SemanticCluster** has proven to scale *shockingly wel
 > ✔️ Up to **300D** with minimal performance loss  
 > ✔️ Near-constant memory footprint  
 > ✔️ Outperforms traditional brute-force in complex feature space  
+> ✔️ **√N scaling**: Sublinear cluster management out of the box
+> ✔️**Semantic generality**: Works with `float`, `Vector3`, strings — anything with a distance metric
+> ✔️For my Unity Homies, it's Burst Compatible for EVEN FURTHER BEYOND performance
+> FUCK this GC BS. Insert and query without noise.
 
 This makes it an **ideal algorithm for motion matching**, AI pose selection, and intent-driven animation systems — where vectors span 30–200+ dimensions (velocity, pose deltas, contact points, force bias, etc).
 
