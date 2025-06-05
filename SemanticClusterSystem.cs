@@ -1,6 +1,6 @@
 
 using System;
-
+// More elegant to keep it this way
 public class SemanticClusterSystem<T>
 {
     private SemanticClusterManager<T> manager;
